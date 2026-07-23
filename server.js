@@ -63,6 +63,14 @@ async function initDatabase() {
             );
         `);
 
+        // Проверка структуры таблиц в консоли Render
+        const tableCheck = await client.query(`
+            SELECT table_name, column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_name IN ('users', 'private_messages');
+        `);
+        console.log('📋 Структура таблиц в БД:', JSON.stringify(tableCheck.rows, null, 2));
+
         // Проверяем, есть ли уже пользователи в таблице. Если пусто — заливаем базовых игроков
         const resCheck = await client.query("SELECT COUNT(*) FROM users;");
         if (parseInt(resCheck.rows[0].count) === 0) {
@@ -233,7 +241,7 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (Исправленная обработка)
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ
             if (data.action === 'chat') {
                 if (!playerId && ws.user_id) {
                     playerId = ws.user_id;
@@ -265,7 +273,6 @@ wss.on('connection', (ws) => {
             // ЛИЧНЫЕ СООБЩЕНИЯ И ДИАЛОГИ (ЧАТЫ)
             // ==========================================
 
-            // 1. Получить список всех диалогов (get_chats)
             if (data.action === 'get_chats') {
                 const currentUserId = parseInt(data.user_id || ws.user_id);
                 if (!currentUserId) return;
@@ -301,7 +308,6 @@ wss.on('connection', (ws) => {
                 });
             }
 
-            // 2. Получить историю сообщений с конкретным игроком (get_history)
             if (data.action === 'get_history') {
                 const currentUserId = parseInt(data.user_id || ws.user_id);
                 const partnerId = parseInt(data.partner_id || data.with_user_id || data.recipient_id);
@@ -332,7 +338,6 @@ wss.on('connection', (ws) => {
                 });
             }
 
-            // 3. Отправить личное сообщение (send_message / private_chat)
             if (data.action === 'send_message' || data.action === 'private_chat') {
                 const senderId = parseInt(data.user_id || ws.user_id);
                 const recipientId = parseInt(data.recipient_id || data.target_id);
@@ -363,10 +368,8 @@ wss.on('connection', (ws) => {
                         created_at: savedMsg.created_at
                     };
 
-                    // Отправляем подтверждение отправителю
                     ws.send(JSON.stringify({ action: "send_message", status: "success", message_data: packet }));
 
-                    // Если получатель онлайн — отправляем ему прямо в сокет!
                     if (playerSockets.has(recipientId)) {
                         const recipientSocket = playerSockets.get(recipientId);
                         if (recipientSocket.readyState === 1) {
