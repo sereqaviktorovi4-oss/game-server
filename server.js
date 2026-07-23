@@ -141,7 +141,8 @@ async function initDatabase() {
                 id SERIAL PRIMARY KEY,
                 sender_id INT NOT NULL,
                 receiver_id INT NOT NULL,
-                gift_name VARCHAR(100),
+                gift_icon TEXT DEFAULT NULL,
+                gift_color VARCHAR(20) DEFAULT 'gold',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         `);
@@ -375,9 +376,9 @@ wss.on('connection', (ws) => {
                         pm.created_at AS last_time,
                         pm.sender_id
                     FROM (
-                        SELECT id, sender_id AS partner_id, recipient_id, message, created_at, sender_id FROM private_messages WHERE recipient_id = $1
+                        SELECT sender_id AS partner_id, recipient_id, message, created_at, sender_id FROM private_messages WHERE recipient_id = $1
                         UNION ALL
-                        SELECT id, recipient_id AS partner_id, sender_id, message, created_at, sender_id FROM private_messages WHERE sender_id = $1
+                        SELECT recipient_id AS partner_id, sender_id, message, created_at, sender_id FROM private_messages WHERE sender_id = $1
                     ) pm
                     JOIN users u ON u.id = pm.partner_id
                     ORDER BY partner_id, pm.created_at DESC;
