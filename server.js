@@ -8,13 +8,13 @@ const db = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Автоматическая инициализация базы данных при старте сервера
+// Полная автоматическая инициализация всех таблиц базы данных при старте сервера
 async function initDatabase() {
     try {
         const client = await db.connect();
         console.log('✅ Успешное подключение к PostgreSQL на Render!');
 
-        // Создаем тип ENUM, если его нет
+        // Создаем тип ENUM для платформ, если его еще нет
         await client.query(`
             DO $$ BEGIN
                 CREATE TYPE user_platform AS ENUM ('web', 'game', 'offline');
@@ -23,7 +23,7 @@ async function initDatabase() {
             END $$;
         `);
 
-        // Создаем таблицу users, если она отсутствует
+        // 1. Таблица пользователей
         await client.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -51,7 +51,7 @@ async function initDatabase() {
             );
         `);
 
-        // Создаем таблицу общего чата (аналог локальной таблицы chat)
+        // 2. Таблица общего чата локаций
         await client.query(`
             CREATE TABLE IF NOT EXISTS chat (
                 id SERIAL PRIMARY KEY,
@@ -64,7 +64,7 @@ async function initDatabase() {
             );
         `);
 
-        // Создаем таблицу личных сообщений, если ее нет
+        // 3. Таблица личных сообщений (современная)
         await client.query(`
             CREATE TABLE IF NOT EXISTS private_messages (
                 id SERIAL PRIMARY KEY,
@@ -76,7 +76,90 @@ async function initDatabase() {
             );
         `);
 
-        // Проверяем, есть ли уже пользователи в таблице. Если пусто — заливаем базовых игроков
+        // 4. Таблица построек (builds)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS builds (
+                id SERIAL PRIMARY KEY,
+                user_id INT NOT NULL,
+                pos_x REAL DEFAULT 0,
+                pos_y REAL DEFAULT 0,
+                pos_z REAL DEFAULT 0,
+                build_type VARCHAR(50) DEFAULT 'default',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 5. Таблица друзей (friends)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS friends (
+                id SERIAL PRIMARY KEY,
+                user_id INT NOT NULL,
+                friend_id INT NOT NULL,
+                status VARCHAR(20) DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 6. Таблица запросов в друзья (friend_requests)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS friend_requests (
+                id SERIAL PRIMARY KEY,
+                sender_id INT NOT NULL,
+                recipient_id INT NOT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 7. Таблица старых системных/общих сообщений (messages)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                sender_id INT,
+                receiver_id INT DEFAULT NULL,
+                message TEXT NOT NULL,
+                is_read INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_vip INT DEFAULT 0
+            );
+        `);
+
+        // 8. Таблица уведомлений (notifications)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                user_id INT NOT NULL,
+                message TEXT NOT NULL,
+                is_read INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 9. Таблица подарков пользователей (user_gifts)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS user_gifts (
+                id SERIAL PRIMARY KEY,
+                sender_id INT NOT NULL,
+                receiver_id INT NOT NULL,
+                gift_name VARCHAR(100),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        // 10. Таблица фотографий пользователей (user_photos)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS user_photos (
+                id SERIAL PRIMARY KEY,
+                user_id INT NOT NULL,
+                photo_path VARCHAR(255) NOT NULL,
+                description TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
+        console.log('📋 Все 10 таблиц успешно проверены и созданы в PostgreSQL!');
+
+        // Проверяем, есть ли пользователи. Если пусто — заливаем стартовых игроков
         const resCheck = await client.query("SELECT COUNT(*) FROM users;");
         if (parseInt(resCheck.rows[0].count) === 0) {
             console.log('📦 Таблица users пуста. Заливаем стартовых игроков...');
@@ -242,7 +325,7 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (сохранение в таблицу chat)
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (с сохранением в таблицу chat)
             if (data.action === 'chat') {
                 if (!playerId && ws.user_id) {
                     playerId = ws.user_id;
@@ -258,7 +341,6 @@ wss.on('connection', (ws) => {
 
                 console.log(`💬 Чат [${currentRoom}] ${senderName}: ${msgText}`);
 
-                // Сохраняем в таблицу chat с правильной структурой полей
                 db.query(
                     "INSERT INTO chat (user_id, username, room_id, message) VALUES ($1, $2, $3, $4)",
                     [playerId || 0, senderName, currentRoom, msgText],
@@ -280,7 +362,6 @@ wss.on('connection', (ws) => {
             // ==========================================
             // ЛИЧНЫЕ СООБЩЕНИЯ И ДИАЛОГИ (ЧАТЫ)
             // ==========================================
-
             if (data.action === 'get_chats') {
                 const currentUserId = parseInt(data.user_id || ws.user_id);
                 if (!currentUserId) return;
