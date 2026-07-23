@@ -14,23 +14,7 @@ db.connect((err, client, release) => {
         console.error('❌ Ошибка подключения к PostgreSQL:', err.message);
     } else {
         console.log('✅ Успешное подключение к PostgreSQL на Render!');
-        
-        // Автоматически создаем таблицу пользователей, если ее еще нет
-        client.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                username VARCHAR(50) UNIQUE NOT NULL,
-                password VARCHAR(100) NOT NULL,
-                email VARCHAR(100)
-            );
-        `, (tableErr) => {
-            release();
-            if (tableErr) {
-                console.error('Ошибка создания таблицы:', tableErr.message);
-            } else {
-                console.log('✅ Таблица "users" готова к работе!');
-            }
-        });
+        release();
     }
 });
 
@@ -51,7 +35,6 @@ function broadcastToRoom(roomName, packet, excludePlayerId = null) {
     });
 }
 
-// Вспомогательные функции хеширования
 function md5(text) {
     return crypto.createHash('md5').update(text).digest('hex');
 }
@@ -62,7 +45,7 @@ function sha1(text) {
 wss.on('connection', (ws) => {
     let playerId = null;
 
-    ws.on('message', (message) => {
+    ws.on('message', async (message) => {
         try {
             const data = JSON.parse(message);
 
@@ -74,35 +57,34 @@ wss.on('connection', (ws) => {
                 const passMd5 = md5(password);
                 const passSha1 = sha1(password);
 
-                console.log(`\n🔍 [ПОПЫТКА ВХОДА] Логин: "${username}" | Введенный пароль: "${password}"`);
+                console.log(`\n🔍 [ВХОД] Логин: "${username}"`);
 
-                // Сначала ищем юзера только по имени, чтобы увидеть, какой пароль хранится в БД
-                db.query("SELECT id, username, password FROM users WHERE LOWER(username) = LOWER($1)", [username], (err, results) => {
+                db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username], (err, results) => {
                     if (err) {
-                        console.error("Ошибка БД при поиске юзера:", err.message);
+                        console.error("❌ Ошибка БД при авторизации:", err.message);
                         ws.send(JSON.stringify({ action: "login_response", success: false, message: "Ошибка БД сервера" }));
                         return;
                     }
 
                     if (results.rows.length === 0) {
-                        console.log(`❌ Пользователь с логином "${username}" не найден в базе!`);
+                        console.log(`❌ Юзер "${username}" не найден.`);
                         ws.send(JSON.stringify({ action: "login_response", success: false, message: "Пользователь не найден" }));
                         return;
                     }
 
                     const user = results.rows[0];
-                    const dbPass = user.password;
+                    const dbPass = user.password || "";
 
-                    console.log(`📦 Найден юзер в БД: ID=${user.id}, Username="${user.username}"`);
-                    console.log(`🔑 Пароль в БД: "${dbPass}"`);
-                    console.log(`🧪 Варианты проверки:`);
-                    console.log(`   - Текст: "${password}"`);
-                    console.log(`   - MD5:   "${passMd5}"`);
-                    console.log(`   - SHA1:  "${passSha1}"`);
+                    console.log(`📦 Найден юзер: ID=${user.id}, DB Pass="${dbPass}"`);
 
-                    // Сверяем пароль со всеми возможными вариантами (Чистый текст, MD5, SHA1, регистронезависимо)
-                    if (dbPass === password || dbPass.toLowerCase() === passMd5 || dbPass.toLowerCase() === passSha1) {
-                        console.log(`✅ Пароль совпал! Успешный вход.`);
+                    // Сверяем пароль (чистый текст, MD5, SHA1)
+                    if (
+                        dbPass === password || 
+                        dbPass.toLowerCase() === passMd5 || 
+                        dbPass.toLowerCase() === passSha1 ||
+                        dbPass === passMd5
+                    ) {
+                        console.log(`✅ Пароль верный!`);
                         ws.send(JSON.stringify({
                             action: "login_response",
                             success: true,
@@ -110,7 +92,7 @@ wss.on('connection', (ws) => {
                             username: user.username
                         }));
                     } else {
-                        console.log(`❌ Пароли не совпали!`);
+                        console.log(`❌ Пароль не подошел.`);
                         ws.send(JSON.stringify({
                             action: "login_response",
                             success: false,
@@ -127,15 +109,17 @@ wss.on('connection', (ws) => {
                 const { username, password, email } = data;
 
                 if (!username || !password) {
-                    ws.send(JSON.stringify({ action: "register_response", success: false, message: "Заполните логин и пароль!" }));
+                    ws.send(JSON.stringify({ action: "register_response", success: false, message: "Заполните данные!" }));
                     return;
                 }
 
-                const checkQuery = "SELECT id FROM users WHERE LOWER(username) = LOWER($1)";
-                db.query(checkQuery, [username], async (checkErr, checkRes) => {
+                console.log(`\n✨ [РЕГИСТРАЦИЯ] Попытка для "${username}"`);
+
+                // 1. Проверяем наличие пользователя
+                db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [username], async (checkErr, checkRes) => {
                     if (checkErr) {
-                        console.error("Ошибка проверки при регистрации:", checkErr.message);
-                        ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка БД при проверке" }));
+                        console.error("❌ Ошибка проверки логина:", checkErr.message);
+                        ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка базы данных" }));
                         return;
                     }
 
@@ -144,32 +128,49 @@ wss.on('connection', (ws) => {
                         return;
                     }
 
-                    const passwordMd5 = md5(password);
-                    
-                    // Синхронизируем счетчик ID
+                    // 2. Получаем список существующих столбцов в таблице users
                     try {
-                        await db.query("SELECT setval('users_id_seq', COALESCE((SELECT MAX(id) FROM users), 1));");
-                    } catch (e) {}
+                        const colsRes = await db.query(`
+                            SELECT column_name 
+                            FROM information_schema.columns 
+                            WHERE table_name = 'users'
+                        `);
+                        const existingCols = colsRes.rows.map(r => r.column_name.toLowerCase());
+                        
+                        const insertData = {
+                            username: username,
+                            password: md5(password)
+                        };
 
-                    const insertQuery = "INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id";
-                    db.query(insertQuery, [username, passwordMd5, email || ""], (insertErr, insertRes) => {
-                        if (insertErr) {
-                            console.error("Ошибка сохранения при регистрации:", insertErr.message);
-                            // Пробуем без email, если колонки email нет в таблице
-                            db.query("INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id", [username, passwordMd5], (err2) => {
-                                if (err2) {
-                                    ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка сохранения" }));
-                                } else {
-                                    console.log(`✨ Зарегистрирован новый игрок: ${username}`);
-                                    ws.send(JSON.stringify({ action: "register_response", success: true, message: "Регистрация успешна!" }));
-                                }
-                            });
-                            return;
-                        }
+                        if (existingCols.includes('email')) insertData.email = email || "";
+                        if (existingCols.includes('mail')) insertData.mail = email || "";
+                        if (existingCols.includes('reg_date')) insertData.reg_date = new Date();
+                        if (existingCols.includes('date_reg')) insertData.date_reg = Math.floor(Date.now() / 1000);
 
-                        console.log(`✨ Зарегистрирован новый игрок: ${username}`);
-                        ws.send(JSON.stringify({ action: "register_response", success: true, message: "Регистрация успешна!" }));
-                    });
+                        const keys = Object.keys(insertData);
+                        const values = Object.values(insertData);
+                        const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
+
+                        // Синхронизируем последовательность ID перед вставкой
+                        await db.query("SELECT setval(pg_get_serial_sequence('users', 'id'), COALESCE((SELECT MAX(id) FROM users), 1));").catch(() => {});
+
+                        const sql = `INSERT INTO users (${keys.join(', ')}) VALUES (${placeholders}) RETURNING id`;
+                        
+                        db.query(sql, values, (insErr, insRes) => {
+                            if (insErr) {
+                                console.error("❌ Подробности ошибки INSERT:", insErr);
+                                ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка сохранения" }));
+                                return;
+                            }
+
+                            console.log(`🎉 Игрок ${username} успешно зарегистрирован! (ID: ${insRes.rows[0].id})`);
+                            ws.send(JSON.stringify({ action: "register_response", success: true, message: "Регистрация успешна!" }));
+                        });
+
+                    } catch (err) {
+                        console.error("❌ Ошибка обработки колонок:", err.message);
+                        ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка сервера" }));
+                    }
                 });
             }
 
