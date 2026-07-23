@@ -233,8 +233,15 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ
-            if (data.action === 'chat' && playerId) {
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (исправлено с отладкой)
+            if (data.action === 'chat') {
+                if (!playerId) {
+                    console.log("⚠️ Попытка отправить сообщение в чат без playerId!", data);
+                    return;
+                }
+                
+                console.log(`💬 Чат [${ws.current_room}] ${ws.username}: ${data.message || data.text}`);
+
                 broadcastToRoom(ws.current_room, { 
                     action: "player_chat", 
                     username: ws.username, 
