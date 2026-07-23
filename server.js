@@ -233,19 +233,29 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (исправлено с отладкой)
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (восстановление playerId из ws.user_id или data.user_id)
             if (data.action === 'chat') {
+                if (!playerId && ws.user_id) {
+                    playerId = ws.user_id;
+                }
+                if (!playerId && data.user_id) {
+                    playerId = parseInt(data.user_id);
+                }
+
                 if (!playerId) {
                     console.log("⚠️ Попытка отправить сообщение в чат без playerId!", data);
                     return;
                 }
                 
-                console.log(`💬 Чат [${ws.current_room}] ${ws.username}: ${data.message || data.text}`);
+                const senderName = ws.username || data.username || "Игрок";
+                const currentRoom = ws.current_room || data.room || "1-1";
 
-                broadcastToRoom(ws.current_room, { 
+                console.log(`💬 Чат [${currentRoom}] ${senderName}: ${data.message || data.text}`);
+
+                broadcastToRoom(currentRoom, { 
                     action: "player_chat", 
-                    username: ws.username, 
-                    sender: ws.username,
+                    username: senderName, 
+                    sender: senderName,
                     message: data.message || data.text 
                 });
             }
@@ -347,7 +357,7 @@ wss.on('connection', (ws) => {
                         id: savedMsg.id,
                         sender_id: senderId,
                         recipient_id: recipientId,
-                        sender_name: ws.username,
+                        sender_name: ws.username || "Игрок",
                         message: msgText,
                         created_at: savedMsg.created_at
                     };
