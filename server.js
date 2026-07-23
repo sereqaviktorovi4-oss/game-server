@@ -233,13 +233,14 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (восстановление playerId из ws.user_id или data.user_id)
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (Исправленная обработка)
             if (data.action === 'chat') {
                 if (!playerId && ws.user_id) {
                     playerId = ws.user_id;
                 }
                 if (!playerId && data.user_id) {
                     playerId = parseInt(data.user_id);
+                    ws.user_id = playerId;
                 }
 
                 if (!playerId) {
