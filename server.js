@@ -63,11 +63,23 @@ async function initDatabase() {
             );
         `);
 
+        // Создаем общую таблицу сообщений/чата локации, аналогично локальной БД
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                sender_id INT,
+                recipient_id INT DEFAULT NULL,
+                room VARCHAR(50) DEFAULT '1-1',
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
         // Проверка структуры таблиц в консоли Render
         const tableCheck = await client.query(`
             SELECT table_name, column_name, data_type 
             FROM information_schema.columns 
-            WHERE table_name IN ('users', 'private_messages');
+            WHERE table_name IN ('users', 'private_messages', 'messages');
         `);
         console.log('📋 Структура таблиц в БД:', JSON.stringify(tableCheck.rows, null, 2));
 
@@ -241,7 +253,7 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (с сохранением в таблицу messages)
             if (data.action === 'chat') {
                 if (!playerId && ws.user_id) {
                     playerId = ws.user_id;
@@ -258,14 +270,26 @@ wss.on('connection', (ws) => {
                 
                 const senderName = ws.username || data.username || "Игрок";
                 const currentRoom = ws.current_room || data.room || "1-1";
+                const msgText = data.message || data.text;
 
-                console.log(`💬 Чат [${currentRoom}] ${senderName}: ${data.message || data.text}`);
+                console.log(`💬 Чат [${currentRoom}] ${senderName}: ${msgText}`);
+
+                // Сохраняем в общую таблицу messages в PostgreSQL
+                db.query(
+                    "INSERT INTO messages (sender_id, room, message) VALUES ($1, $2, $3)",
+                    [playerId, currentRoom, msgText],
+                    (err) => {
+                        if (err) {
+                            console.error("Ошибка сохранения общего сообщения в БД:", err);
+                        }
+                    }
+                );
 
                 broadcastToRoom(currentRoom, { 
                     action: "player_chat", 
                     username: senderName, 
                     sender: senderName,
-                    message: data.message || data.text 
+                    message: msgText 
                 });
             }
 
