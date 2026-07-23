@@ -51,6 +51,19 @@ async function initDatabase() {
             );
         `);
 
+        // Создаем таблицу общего чата (аналог локальной таблицы chat)
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS chat (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50),
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                room_id VARCHAR(50) DEFAULT 'global',
+                is_vip INT DEFAULT 0,
+                user_id INT DEFAULT 0
+            );
+        `);
+
         // Создаем таблицу личных сообщений, если ее нет
         await client.query(`
             CREATE TABLE IF NOT EXISTS private_messages (
@@ -63,26 +76,6 @@ async function initDatabase() {
             );
         `);
 
-        // Создаем общую таблицу сообщений/чата локации, аналогично локальной БД
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                sender_id INT,
-                recipient_id INT DEFAULT NULL,
-                room VARCHAR(50) DEFAULT '1-1',
-                message TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // Проверка структуры таблиц в консоли Render
-        const tableCheck = await client.query(`
-            SELECT table_name, column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_name IN ('users', 'private_messages', 'messages');
-        `);
-        console.log('📋 Структура таблиц в БД:', JSON.stringify(tableCheck.rows, null, 2));
-
         // Проверяем, есть ли уже пользователи в таблице. Если пусто — заливаем базовых игроков
         const resCheck = await client.query("SELECT COUNT(*) FROM users;");
         if (parseInt(resCheck.rows[0].count) === 0) {
@@ -91,14 +84,10 @@ async function initDatabase() {
             await client.query(`
                 INSERT INTO users (id, username, password, email, gender, birth_year, selected_character, plot_coords, name_changes, status_text, avatar_path, created_at, plot_name, last_active, money, citymoney, last_seen, platform, is_typing_at, pos_x, pos_y, pos_z) VALUES
                 (1, 'sereqa', '$2y$10$5cqEQA0OH9ChAaX0RqG2f.O7jM9x5uTOTfR8lUDwdNIZI7VLSgKBW', 'sereqaviktorovi4@gmail.com', 'm', 1981, NULL, '1-3', 0, 'Король этого города', 'uploads/avatars/avatar_u1_1776072071_26a0fc9a.jpg', '2026-04-13 09:20:53', 'мой дом', '2026-07-22 10:49:24', 99650, 240, '2026-07-22 10:49:24', 'game', 0, 0, 0, 0),
-                (11, 'anna', '$2y$10$xKuOZcjxHsf33svc6vlbpuXOqUORY1Xodtx2bSkTelSthgls61Fui', 'ЭМАИЛ', 'm', 2000, NULL, '2-2', 0, 'Житель Love City', '', '2026-04-30 05:31:14', 'Мой участок', '2026-07-22 14:34:08', 950, 400, '2026-07-22 14:34:08', 'game', 0, 0, 0, 0),
-                (21, 'kfffvlnfrt', '$2y$10$7E4XFjTfgnnRDp0a3HM0T.3r63h3v/HijxgoGZ76Eu18BLBo4/aBG', 'nuphwvqe@immenseignite.info', 'm', 2000, NULL, '1-1', 0, 'Житель Love City', '', '2026-06-24 18:53:07', 'Мой участок', '2026-06-24 18:53:07', 100, 100, '2026-06-24 18:53:07', 'offline', 0, 0, 0, 0),
-                (22, 'wtvfzlyfjo', '$2y$10$jGUlwfJ4IewRuoqTQUMvquxaTKMzoMPFkXIrsCOkv/v.7EM3BGCka', 'xlmphrqv@immenseignite.info', 'm', 2000, NULL, '1-1', 0, 'Житель Love City', '', '2026-06-24 18:53:12', 'Мой участок', '2026-06-24 18:53:12', 100, 100, '2026-06-24 18:53:12', 'offline', 0, 0, 0, 0),
-                (23, 'vhoooqxxuh', '$2y$10$BSKhVxDv9VOBetzrXEDrM.8/SEN6WLC08zFzdouf.7zpdhNbBVe.6', 'hqtvoxxk@immenseignite.info', 'm', 2000, NULL, '1-1', 0, 'Житель Love City', '', '2026-06-24 18:53:42', 'Мой участок', '2026-06-24 18:53:42', 100, 100, '2026-06-24 18:53:42', 'offline', 0, 0, 0, 0);
+                (11, 'anna', '$2y$10$xKuOZcjxHsf33svc6vlbpuXOqUORY1Xodtx2bSkTelSthgls61Fui', 'ЭМАИЛ', 'm', 2000, NULL, '2-2', 0, 'Житель Love City', '', '2026-04-30 05:31:14', 'Мой участок', '2026-07-22 14:34:08', 950, 400, '2026-07-22 14:34:08', 'game', 0, 0, 0, 0);
             `);
 
-            // Синхронизируем счетчик ID после вставки
-            await client.query("SELECT setval('users_id_seq', 24, false);");
+            await client.query("SELECT setval('users_id_seq', 12, false);");
             console.log('✨ Стартовые пользователи успешно загружены!');
         }
 
@@ -253,7 +242,7 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (с сохранением в таблицу messages)
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ (сохранение в таблицу chat)
             if (data.action === 'chat') {
                 if (!playerId && ws.user_id) {
                     playerId = ws.user_id;
@@ -263,24 +252,19 @@ wss.on('connection', (ws) => {
                     ws.user_id = playerId;
                 }
 
-                if (!playerId) {
-                    console.log("⚠️ Попытка отправить сообщение в чат без playerId!", data);
-                    return;
-                }
-                
                 const senderName = ws.username || data.username || "Игрок";
                 const currentRoom = ws.current_room || data.room || "1-1";
                 const msgText = data.message || data.text;
 
                 console.log(`💬 Чат [${currentRoom}] ${senderName}: ${msgText}`);
 
-                // Сохраняем в общую таблицу messages в PostgreSQL
+                // Сохраняем в таблицу chat с правильной структурой полей
                 db.query(
-                    "INSERT INTO messages (sender_id, room, message) VALUES ($1, $2, $3)",
-                    [playerId, currentRoom, msgText],
+                    "INSERT INTO chat (user_id, username, room_id, message) VALUES ($1, $2, $3, $4)",
+                    [playerId || 0, senderName, currentRoom, msgText],
                     (err) => {
                         if (err) {
-                            console.error("Ошибка сохранения общего сообщения в БД:", err);
+                            console.error("Ошибка сохранения сообщения в таблицу chat:", err);
                         }
                     }
                 );
@@ -376,7 +360,7 @@ wss.on('connection', (ws) => {
 
                 db.query(insertMsg, [senderId, recipientId, msgText], (err, res) => {
                     if (err) {
-                        console.error("Ошибка сохранения сообщения:", err);
+                        console.error("Ошибка сохранения личного сообщения:", err);
                         ws.send(JSON.stringify({ action: "send_message", status: "error" }));
                         return;
                     }
