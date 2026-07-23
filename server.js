@@ -1,5 +1,6 @@
 const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
+const crypto = require('crypto');
 
 // Подключение к PostgreSQL на Render
 const db = new Pool({
@@ -19,7 +20,8 @@ db.connect((err, client, release) => {
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 username VARCHAR(50) UNIQUE NOT NULL,
-                password VARCHAR(100) NOT NULL
+                password VARCHAR(100) NOT NULL,
+                email VARCHAR(100)
             );
         `, (tableErr) => {
             release();
@@ -49,6 +51,11 @@ function broadcastToRoom(roomName, packet, excludePlayerId = null) {
     });
 }
 
+// Вспомогательная функция хеширования MD5 для совпадения со старым дампом БД
+function md5(text) {
+    return crypto.createHash('md5').update(text).digest('hex');
+}
+
 wss.on('connection', (ws) => {
     let playerId = null;
 
@@ -57,13 +64,15 @@ wss.on('connection', (ws) => {
             const data = JSON.parse(message);
 
             // ==========================================
-            // 0. АВТОРИЗАЦИЯ И РЕГИСТРАЦИЯ (Login / Register)
+            // 0. АВТОРИЗАЦИЯ (Login)
             // ==========================================
             if (data.action === 'login' || data.type === 'login') {
                 const { username, password } = data;
+                const passwordMd5 = md5(password);
 
-                const query = "SELECT id, username FROM users WHERE username = $1 AND password = $2";
-                db.query(query, [username, password], (err, results) => {
+                // Ищем совпадение как по чистому тексту, так и по MD5 хешу
+                const query = "SELECT id, username FROM users WHERE LOWER(username) = LOWER($1) AND (password = $2 OR password = $3)";
+                db.query(query, [username, password, passwordMd5], (err, results) => {
                     if (err) {
                         console.error("Ошибка БД при авторизации:", err.message);
                         ws.send(JSON.stringify({ 
@@ -90,6 +99,68 @@ wss.on('connection', (ws) => {
                             message: "Неверный логин или пароль"
                         }));
                     }
+                });
+            }
+
+            // ==========================================
+            // 0.1 РЕГИСТРАЦИЯ (Register)
+            // ==========================================
+            if (data.action === 'register') {
+                const { username, password, email } = data;
+
+                if (!username || !password) {
+                    ws.send(JSON.stringify({
+                        action: "register_response",
+                        success: false,
+                        message: "Заполните логин и пароль!"
+                    }));
+                    return;
+                }
+
+                // Проверяем, существует ли пользователь
+                const checkQuery = "SELECT id FROM users WHERE LOWER(username) = LOWER($1)";
+                db.query(checkQuery, [username], (checkErr, checkRes) => {
+                    if (checkErr) {
+                        console.error("Ошибка проверки при регистрации:", checkErr.message);
+                        ws.send(JSON.stringify({
+                            action: "register_response",
+                            success: false,
+                            message: "Ошибка БД при проверке логина"
+                        }));
+                        return;
+                    }
+
+                    if (checkRes.rows.length > 0) {
+                        ws.send(JSON.stringify({
+                            action: "register_response",
+                            success: false,
+                            message: "Логин уже занят!"
+                        }));
+                        return;
+                    }
+
+                    // Сохраняем пароль в MD5 хеше
+                    const passwordMd5 = md5(password);
+                    const insertQuery = "INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id";
+                    
+                    db.query(insertQuery, [username, passwordMd5, email || ""], (insertErr, insertRes) => {
+                        if (insertErr) {
+                            console.error("Ошибка сохранения при регистрации:", insertErr.message);
+                            ws.send(JSON.stringify({
+                                action: "register_response",
+                                success: false,
+                                message: "Ошибка сохранения пользователя"
+                            }));
+                            return;
+                        }
+
+                        console.log(`✨ Зарегистрирован новый игрок: ${username}`);
+                        ws.send(JSON.stringify({
+                            action: "register_response",
+                            success: true,
+                            message: "Регистрация успешна!"
+                        }));
+                    });
                 });
             }
 
