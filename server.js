@@ -51,6 +51,18 @@ async function initDatabase() {
             );
         `);
 
+        // Создаем таблицу личных сообщений, если ее нет
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS private_messages (
+                id SERIAL PRIMARY KEY,
+                sender_id INT NOT NULL,
+                recipient_id INT NOT NULL,
+                message TEXT NOT NULL,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
+
         // Проверяем, есть ли уже пользователи в таблице. Если пусто — заливаем базовых игроков
         const resCheck = await client.query("SELECT COUNT(*) FROM users;");
         if (parseInt(resCheck.rows[0].count) === 0) {
@@ -221,8 +233,129 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
+            // ОБЩИЙ ЧАТ ЛОКАЦИИ
             if (data.action === 'chat' && playerId) {
-                broadcastToRoom(ws.current_room, { action: "player_chat", username: ws.username, message: data.message });
+                broadcastToRoom(ws.current_room, { 
+                    action: "player_chat", 
+                    username: ws.username, 
+                    sender: ws.username,
+                    message: data.message || data.text 
+                });
+            }
+
+            // ==========================================
+            // ЛИЧНЫЕ СООБЩЕНИЯ И ДИАЛОГИ (ЧАТЫ)
+            // ==========================================
+
+            // 1. Получить список всех диалогов (get_chats)
+            if (data.action === 'get_chats') {
+                const currentUserId = parseInt(data.user_id || ws.user_id);
+                if (!currentUserId) return;
+
+                const chatsQuery = `
+                    SELECT DISTINCT ON (partner_id)
+                        partner_id,
+                        u.username AS partner_username,
+                        u.avatar_path AS partner_avatar,
+                        pm.message AS last_message,
+                        pm.created_at AS last_time,
+                        pm.sender_id
+                    FROM (
+                        SELECT id, sender_id AS partner_id, recipient_id, message, created_at, sender_id FROM private_messages WHERE recipient_id = $1
+                        UNION ALL
+                        SELECT id, recipient_id AS partner_id, sender_id, message, created_at, sender_id FROM private_messages WHERE sender_id = $1
+                    ) pm
+                    JOIN users u ON u.id = pm.partner_id
+                    ORDER BY partner_id, pm.created_at DESC;
+                `;
+
+                db.query(chatsQuery, [currentUserId], (err, results) => {
+                    if (err) {
+                        console.error("Ошибка при получении чатов:", err);
+                        ws.send(JSON.stringify({ action: "get_chats", status: "error", chats: [] }));
+                    } else {
+                        ws.send(JSON.stringify({
+                            action: "get_chats",
+                            status: "success",
+                            chats: results.rows
+                        }));
+                    }
+                });
+            }
+
+            // 2. Получить историю сообщений с конкретным игроком (get_history)
+            if (data.action === 'get_history') {
+                const currentUserId = parseInt(data.user_id || ws.user_id);
+                const partnerId = parseInt(data.partner_id || data.with_user_id || data.recipient_id);
+
+                if (!currentUserId || !partnerId) return;
+
+                const historyQuery = `
+                    SELECT id, sender_id, recipient_id, message, created_at
+                    FROM private_messages
+                    WHERE (sender_id = $1 AND recipient_id = $2)
+                       OR (sender_id = $2 AND recipient_id = $1)
+                    ORDER BY created_at ASC
+                    LIMIT 100;
+                `;
+
+                db.query(historyQuery, [currentUserId, partnerId], (err, results) => {
+                    if (err) {
+                        console.error("Ошибка при получении истории:", err);
+                        ws.send(JSON.stringify({ action: "get_history", status: "error", messages: [] }));
+                    } else {
+                        ws.send(JSON.stringify({
+                            action: "get_history",
+                            status: "success",
+                            partner_id: partnerId,
+                            messages: results.rows
+                        }));
+                    }
+                });
+            }
+
+            // 3. Отправить личное сообщение (send_message / private_chat)
+            if (data.action === 'send_message' || data.action === 'private_chat') {
+                const senderId = parseInt(data.user_id || ws.user_id);
+                const recipientId = parseInt(data.recipient_id || data.target_id);
+                const msgText = data.message || data.text;
+
+                if (!senderId || !recipientId || !msgText) return;
+
+                const insertMsg = `
+                    INSERT INTO private_messages (sender_id, recipient_id, message)
+                    VALUES ($1, $2, $3) RETURNING id, created_at;
+                `;
+
+                db.query(insertMsg, [senderId, recipientId, msgText], (err, res) => {
+                    if (err) {
+                        console.error("Ошибка сохранения сообщения:", err);
+                        ws.send(JSON.stringify({ action: "send_message", status: "error" }));
+                        return;
+                    }
+
+                    const savedMsg = res.rows[0];
+                    const packet = {
+                        action: "private_chat",
+                        id: savedMsg.id,
+                        sender_id: senderId,
+                        recipient_id: recipientId,
+                        sender_name: ws.username,
+                        message: msgText,
+                        created_at: savedMsg.created_at
+                    };
+
+                    // Отправляем подтверждение отправителю
+                    ws.send(JSON.stringify({ action: "send_message", status: "success", message_data: packet }));
+
+                    // Если получатель онлайн — отправляем ему прямо в сокет!
+                    if (playerSockets.has(recipientId)) {
+                        const recipientSocket = playerSockets.get(recipientId);
+                        if (recipientSocket.readyState === 1) {
+                            recipientSocket.send(JSON.stringify(packet));
+                        }
+                    }
+                });
             }
 
         } catch (err) {
