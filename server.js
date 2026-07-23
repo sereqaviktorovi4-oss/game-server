@@ -1,24 +1,35 @@
-// server.js
 const { WebSocketServer } = require('ws');
 const mysql = require('mysql2');
 
-// Подключение к базе данных lovesity
+// Подключение к базе данных InfinityFree (lovesity)
 const db = mysql.createPool({
-    host: 'localhost',
-    user: 'admin',
-    password: '1234',
-    database: 'lovesity',
+    host: 'sql206.infinityfree.com',
+    user: 'if0_38379031',
+    password: 'sx2cuTTkpnJ',
+    database: 'if0_38379031_lovesity',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 });
 
-// Открываем сервер на порту 3000
-const wss = new WebSocketServer({ port: 3000 });
+// Проверка подключения к БД при запуске
+db.getConnection((err, connection) => {
+    if (err) {
+        console.error('❌ Ошибка подключения к БД MySQL:', err.message);
+    } else {
+        console.log('✅ Успешное подключение к БД MySQL (InfinityFree)!');
+        connection.release();
+    }
+});
+
+// Настройка порта (Render автоматически передает динамический PORT)
+const PORT = process.env.PORT || 3000;
+const wss = new WebSocketServer({ port: PORT });
+
 const players = {};
 const playerSockets = new Map();
 
-console.log("🚀 Игровой WebSocket-сервер LoveSity запущен на порту 3000!");
+console.log(`🚀 Игровой WebSocket-сервер LoveSity запущен на порту ${PORT}!`);
 
 // Функция для вещания пакета по конкретной комнате
 function broadcastToRoom(roomName, packet, excludePlayerId = null) {
@@ -36,6 +47,43 @@ wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
+
+            // ==========================================
+            // 0. ПРЯМАЯ АВТОРИЗАЦИЯ (Login)
+            // ==========================================
+            if (data.action === 'login' || data.type === 'login') {
+                const { username, password } = data;
+
+                const query = "SELECT id, username FROM users WHERE username = ? AND password = ?";
+                db.query(query, [username, password], (err, results) => {
+                    if (err) {
+                        console.error("Ошибка БД при авторизации:", err.message);
+                        ws.send(JSON.stringify({ 
+                            action: "login_response", 
+                            success: false, 
+                            message: "Ошибка БД сервера" 
+                        }));
+                        return;
+                    }
+
+                    if (results.length > 0) {
+                        const user = results[0];
+                        ws.send(JSON.stringify({
+                            action: "login_response",
+                            success: true,
+                            user_id: user.id,
+                            username: user.username
+                        }));
+                        console.log(`🔑 Авторизован игрок: ${user.username} (ID: ${user.id})`);
+                    } else {
+                        ws.send(JSON.stringify({
+                            action: "login_response",
+                            success: false,
+                            message: "Неверный логин или пароль"
+                        }));
+                    }
+                });
+            }
 
             // ==========================================
             // 1. ВХОД В МИР (Join)
@@ -58,7 +106,7 @@ wss.on('connection', (ws) => {
                             id: playerId,
                             username: dbUsername,
                             x: 0.0,
-                            y: 0.5, // Ноги персонажа теперь будут ровно на земле
+                            y: 0.5, // Ноги персонажа ровно на земле
                             z: 0.0,
                             room: ws.current_room
                         };
