@@ -160,17 +160,14 @@ async function initDatabase() {
 
         console.log('📋 Все 10 таблиц успешно проверены и созданы в PostgreSQL!');
 
-        // Проверяем, есть ли пользователи. Если пусто — заливаем стартовых игроков
         const resCheck = await client.query("SELECT COUNT(*) FROM users;");
         if (parseInt(resCheck.rows[0].count) === 0) {
             console.log('📦 Таблица users пуста. Заливаем стартовых игроков...');
-            
             await client.query(`
                 INSERT INTO users (id, username, password, email, gender, birth_year, selected_character, plot_coords, name_changes, status_text, avatar_path, created_at, plot_name, last_active, money, citymoney, last_seen, platform, is_typing_at, pos_x, pos_y, pos_z) VALUES
                 (1, 'sereqa', '$2y$10$5cqEQA0OH9ChAaX0RqG2f.O7jM9x5uTOTfR8lUDwdNIZI7VLSgKBW', 'sereqaviktorovi4@gmail.com', 'm', 1981, NULL, '1-3', 0, 'Король этого города', 'uploads/avatars/avatar_u1_1776072071_26a0fc9a.jpg', '2026-04-13 09:20:53', 'мой дом', '2026-07-22 10:49:24', 99650, 240, '2026-07-22 10:49:24', 'game', 0, 0, 0, 0),
                 (11, 'anna', '$2y$10$xKuOZcjxHsf33svc6vlbpuXOqUORY1Xodtx2bSkTelSthgls61Fui', 'ЭМАИЛ', 'm', 2000, NULL, '2-2', 0, 'Житель Love City', '', '2026-04-30 05:31:14', 'Мой участок', '2026-07-22 14:34:08', 950, 400, '2026-07-22 14:34:08', 'game', 0, 0, 0, 0);
             `);
-
             await client.query("SELECT setval('users_id_seq', 12, false);");
             console.log('✨ Стартовые пользователи успешно загружены!');
         }
@@ -202,6 +199,11 @@ function md5(text) {
     return crypto.createHash('md5').update(text).digest('hex');
 }
 
+function req1ResRows(err, res) {
+    if (err || !res) return [];
+    return res.rows;
+}
+
 wss.on('connection', (ws) => {
     let playerId = null;
 
@@ -209,27 +211,21 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
 
-            // ==========================================
-            // ЛОГИН (Login)
-            // ==========================================
+            // ЛОГИН
             if (data.action === 'login' || data.type === 'login') {
                 const { username, password } = data;
-
                 db.query("SELECT id, username, password FROM users WHERE LOWER(username) = LOWER($1)", [username], async (err, results) => {
                     if (err || results.rows.length === 0) {
                         ws.send(JSON.stringify({ action: "login_response", success: false, message: "Неверный логин или пароль" }));
                         return;
                     }
-
                     const user = results.rows[0];
                     let isValid = false;
-
                     if (user.password.startsWith('$2a$') || user.password.startsWith('$2y$') || user.password.startsWith('$2b$')) {
                         isValid = await bcrypt.compare(password, user.password);
                     } else {
                         isValid = (user.password === password || user.password === md5(password));
                     }
-
                     if (isValid) {
                         ws.send(JSON.stringify({ action: "login_response", success: true, user_id: user.id, username: user.username }));
                         console.log(`🔑 Успешный вход: ${user.username}`);
@@ -239,48 +235,35 @@ wss.on('connection', (ws) => {
                 });
             }
 
-            // ==========================================
-            // РЕГИСТРАЦИЯ (Register)
-            // ==========================================
+            // РЕГИСТРАЦИЯ
             if (data.action === 'register') {
                 const { username, password, email } = data;
-
                 if (!username || !password) {
                     ws.send(JSON.stringify({ action: "register_response", success: false, message: "Заполните все поля!" }));
                     return;
                 }
-
                 db.query("SELECT id FROM users WHERE LOWER(username) = LOWER($1)", [username], async (checkErr, checkRes) => {
                     if (checkRes && checkRes.rows.length > 0) {
                         ws.send(JSON.stringify({ action: "register_response", success: false, message: "Логин уже занят!" }));
                         return;
                     }
-
                     const hashedPassword = await bcrypt.hash(password, 10);
-                    const insertQuery = "INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id";
-                    
-                    db.query(insertQuery, [username, hashedPassword, email || `${username}@mail.com`], (insErr, insRes) => {
+                    db.query("INSERT INTO users (username, password, email) VALUES ($1, $2, $3) RETURNING id", [username, hashedPassword, email || `${username}@mail.com`], (insErr) => {
                         if (insErr) {
-                            console.error("Ошибка регистрации:", insErr.message);
                             ws.send(JSON.stringify({ action: "register_response", success: false, message: "Ошибка сохранения" }));
                         } else {
-                            console.log(`✨ Зарегистрирован новый игрок: ${username}`);
                             ws.send(JSON.stringify({ action: "register_response", success: true, message: "Регистрация успешна!" }));
                         }
                     });
                 });
             }
 
-            // ==========================================
-            // ИГРОВОЙ МИР (Join / Move / Chat)
-            // ==========================================
+            // ИГРОВОЙ МИР
             if (data.action === 'join') {
                 playerId = parseInt(data.user_id);
-                ws.current_room = data.room || "1-1"; 
-                
+                ws.current_room = data.room || "1-1";
                 db.query("SELECT username FROM users WHERE id = $1", [playerId], (err, results) => {
                     let dbUsername = (results && results.rows.length > 0) ? results.rows[0].username : data.username;
-
                     players[playerId] = { id: playerId, username: dbUsername, x: 0.0, y: 0.5, z: 0.0, room: ws.current_room };
                     ws.user_id = playerId;
                     ws.username = dbUsername;
@@ -306,7 +289,6 @@ wss.on('connection', (ws) => {
                     players[playerId].room = newRoom;
                     players[playerId].x = 0.0; players[playerId].y = 0.5; players[playerId].z = 0.0;
                 }
-
                 const roomPlayers = {};
                 for (let id in players) {
                     if (players[id].room === newRoom) roomPlayers[id] = players[id];
@@ -326,55 +308,25 @@ wss.on('connection', (ws) => {
                 }, playerId);
             }
 
-            // ОБЩИЙ ЧАТ ЛОКАЦИИ (с сохранением в таблицу chat)
+            // ОБЩИЙ ЧАТ
             if (data.action === 'chat') {
-                if (!playerId && ws.user_id) {
-                    playerId = ws.user_id;
-                }
-                if (!playerId && data.user_id) {
-                    playerId = parseInt(data.user_id);
-                    ws.user_id = playerId;
-                }
-
+                if (!playerId && ws.user_id) playerId = ws.user_id;
                 const senderName = ws.username || data.username || "Игрок";
                 const currentRoom = ws.current_room || data.room || "1-1";
                 const msgText = data.message || data.text;
 
-                console.log(`💬 Чат [${currentRoom}] ${senderName}: ${msgText}`);
-
-                db.query(
-                    "INSERT INTO chat (user_id, username, room_id, message) VALUES ($1, $2, $3, $4)",
-                    [playerId || 0, senderName, currentRoom, msgText],
-                    (err) => {
-                        if (err) {
-                            console.error("Ошибка сохранения сообщения в таблицу chat:", err);
-                        }
-                    }
-                );
-
-                broadcastToRoom(currentRoom, { 
-                    action: "player_chat", 
-                    username: senderName, 
-                    sender: senderName,
-                    message: msgText 
-                });
+                db.query("INSERT INTO chat (user_id, username, room_id, message) VALUES ($1, $2, $3, $4)", [playerId || 0, senderName, currentRoom, msgText], () => {});
+                broadcastToRoom(currentRoom, { action: "player_chat", username: senderName, sender: senderName, message: msgText });
             }
 
-            // ==========================================
-            // ЛИЧНЫЕ СООБЩЕНИЯ И ДИАЛОГИ (ЧАТЫ)
-            // ==========================================
+            // ЛИЧНЫЕ СООБЩЕНИЯ
             if (data.action === 'get_chats') {
                 const currentUserId = parseInt(data.user_id || ws.user_id);
                 if (!currentUserId) return;
-
                 const chatsQuery = `
                     SELECT DISTINCT ON (partner_id)
-                        partner_id,
-                        u.username AS partner_username,
-                        u.avatar_path AS partner_avatar,
-                        pm.message AS last_message,
-                        pm.created_at AS last_time,
-                        pm.sender_id
+                        partner_id, u.username AS partner_username, u.avatar_path AS partner_avatar,
+                        pm.message AS last_message, pm.created_at AS last_time, pm.sender_id
                     FROM (
                         SELECT sender_id AS partner_id, recipient_id, message, created_at, sender_id FROM private_messages WHERE recipient_id = $1
                         UNION ALL
@@ -383,48 +335,23 @@ wss.on('connection', (ws) => {
                     JOIN users u ON u.id = pm.partner_id
                     ORDER BY partner_id, pm.created_at DESC;
                 `;
-
                 db.query(chatsQuery, [currentUserId], (err, results) => {
-                    if (err) {
-                        console.error("Ошибка при получении чатов:", err);
-                        ws.send(JSON.stringify({ action: "get_chats", status: "error", chats: [] }));
-                    } else {
-                        ws.send(JSON.stringify({
-                            action: "get_chats",
-                            status: "success",
-                            chats: results.rows
-                        }));
-                    }
+                    ws.send(JSON.stringify({ action: "get_chats", status: "success", chats: err ? [] : results.rows }));
                 });
             }
 
             if (data.action === 'get_history') {
                 const currentUserId = parseInt(data.user_id || ws.user_id);
                 const partnerId = parseInt(data.partner_id || data.with_user_id || data.recipient_id);
-
                 if (!currentUserId || !partnerId) return;
-
                 const historyQuery = `
                     SELECT id, sender_id, recipient_id, message, created_at
                     FROM private_messages
-                    WHERE (sender_id = $1 AND recipient_id = $2)
-                       OR (sender_id = $2 AND recipient_id = $1)
-                    ORDER BY created_at ASC
-                    LIMIT 100;
+                    WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)
+                    ORDER BY created_at ASC LIMIT 100;
                 `;
-
                 db.query(historyQuery, [currentUserId, partnerId], (err, results) => {
-                    if (err) {
-                        console.error("Ошибка при получении истории:", err);
-                        ws.send(JSON.stringify({ action: "get_history", status: "error", messages: [] }));
-                    } else {
-                        ws.send(JSON.stringify({
-                            action: "get_history",
-                            status: "success",
-                            partner_id: partnerId,
-                            messages: results.rows
-                        }));
-                    }
+                    ws.send(JSON.stringify({ action: "get_history", status: "success", partner_id: partnerId, messages: err ? [] : results.rows }));
                 });
             }
 
@@ -432,40 +359,80 @@ wss.on('connection', (ws) => {
                 const senderId = parseInt(data.user_id || ws.user_id);
                 const recipientId = parseInt(data.recipient_id || data.target_id);
                 const msgText = data.message || data.text;
-
                 if (!senderId || !recipientId || !msgText) return;
 
-                const insertMsg = `
-                    INSERT INTO private_messages (sender_id, recipient_id, message)
-                    VALUES ($1, $2, $3) RETURNING id, created_at;
-                `;
-
-                db.query(insertMsg, [senderId, recipientId, msgText], (err, res) => {
-                    if (err) {
-                        console.error("Ошибка сохранения личного сообщения:", err);
-                        ws.send(JSON.stringify({ action: "send_message", status: "error" }));
-                        return;
-                    }
-
+                db.query("INSERT INTO private_messages (sender_id, recipient_id, message) VALUES ($1, $2, $3) RETURNING id, created_at", [senderId, recipientId, msgText], (err, res) => {
+                    if (err) return;
                     const savedMsg = res.rows[0];
                     const packet = {
-                        action: "private_chat",
-                        id: savedMsg.id,
-                        sender_id: senderId,
-                        recipient_id: recipientId,
-                        sender_name: ws.username || "Игрок",
-                        message: msgText,
-                        created_at: savedMsg.created_at
+                        action: "private_chat", id: savedMsg.id, sender_id: senderId, recipient_id: recipientId,
+                        sender_name: ws.username || "Игрок", message: msgText, created_at: savedMsg.created_at
                     };
-
                     ws.send(JSON.stringify({ action: "send_message", status: "success", message_data: packet }));
-
                     if (playerSockets.has(recipientId)) {
-                        const recipientSocket = playerSockets.get(recipientId);
-                        if (recipientSocket.readyState === 1) {
-                            recipientSocket.send(JSON.stringify(packet));
-                        }
+                        playerSockets.get(recipientId).send(JSON.stringify(packet));
                     }
+                });
+            }
+
+            // ДРУЗЬЯ И ЗАЯВКИ
+            if (data.action === 'get_friend_requests' || data.action === 'get_friends') {
+                const currentUserId = parseInt(data.user_id || ws.user_id);
+                if (!currentUserId) return;
+                const reqQuery = `
+                    SELECT fr.id, fr.sender_id, u.username AS sender_username, u.avatar_path AS sender_avatar
+                    FROM friend_requests fr
+                    JOIN users u ON u.id = fr.sender_id
+                    WHERE fr.recipient_id = $1 AND fr.status = 'pending';
+                `;
+                const friendsQuery = `
+                    SELECT f.friend_id AS id, u.username, u.avatar_path, u.status_text, u.platform
+                    FROM friends f
+                    JOIN users u ON u.id = f.friend_id
+                    WHERE f.user_id = $1 AND f.status = 'active';
+                `;
+                db.query(reqQuery, [currentUserId], (err1, reqRes) => {
+                    db.query(friendsQuery, [currentUserId], (err2, friendRes) => {
+                        ws.send(JSON.stringify({
+                            action: "friend_data_response",
+                            requests: req1ResRows(err1, reqRes),
+                            friends: err2 ? [] : friendRes.rows
+                        }));
+                    });
+                });
+            }
+
+            if (data.action === 'send_friend_request') {
+                const senderId = parseInt(data.user_id || ws.user_id);
+                const recipientId = parseInt(data.target_id || data.friend_id);
+                if (!senderId || !recipientId || senderId === recipientId) return;
+
+                db.query("INSERT INTO friend_requests (sender_id, recipient_id, status) VALUES ($1, $2, 'pending') ON CONFLICT DO NOTHING RETURNING id", [senderId, recipientId], (err) => {
+                    if (!err) {
+                        if (playerSockets.has(recipientId)) {
+                            playerSockets.get(recipientId).send(JSON.stringify({
+                                action: "new_friend_request", sender_id: senderId, username: ws.username || "Игрок"
+                            }));
+                        }
+                        ws.send(JSON.stringify({ action: "send_friend_request_response", success: true }));
+                    }
+                });
+            }
+
+            if (data.action === 'accept_friend') {
+                const userId = parseInt(data.user_id || ws.user_id);
+                const friendId = parseInt(data.friend_id || data.sender_id);
+                if (!userId || !friendId) return;
+
+                db.query("UPDATE friend_requests SET status = 'accepted' WHERE sender_id = $1 AND recipient_id = $2", [friendId, userId], () => {
+                    db.query("INSERT INTO friends (user_id, friend_id, status) VALUES ($1, $2, 'active'), ($2, $1, 'active') ON CONFLICT DO NOTHING", [userId, friendId], () => {
+                        ws.send(JSON.stringify({ action: "accept_friend_response", success: true, friend_id: friendId }));
+                        if (playerSockets.has(friendId)) {
+                            playerSockets.get(friendId).send(JSON.stringify({
+                                action: "friend_request_accepted", user_id: userId, username: ws.username
+                            }));
+                        }
+                    });
                 });
             }
 
@@ -481,4 +448,9 @@ wss.on('connection', (ws) => {
             playerSockets.delete(playerId);
         }
     });
+});
+
+const PORT = process.env.PORT || 3000;
+wss.listen(PORT, () => {
+    console.log(`🚀 Сервер запущен на порту ${PORT}`);
 });
