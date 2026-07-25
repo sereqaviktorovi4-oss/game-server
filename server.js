@@ -64,7 +64,7 @@ async function initDatabase() {
             );
         `);
 
-        // 3. Таблица личных сообщений (современная)
+        // 3. Таблица личных сообщений
         await client.query(`
             CREATE TABLE IF NOT EXISTS private_messages (
                 id SERIAL PRIMARY KEY,
@@ -450,7 +450,4 @@ wss.on('connection', (ws) => {
     });
 });
 
-const PORT = process.env.PORT || 3000;
-wss.listen(PORT, () => {
-    console.log(`🚀 Сервер запущен на порту ${PORT}`);
-});
+console.log(`🚀 Сервер запущен на порту ${PORT}`);
