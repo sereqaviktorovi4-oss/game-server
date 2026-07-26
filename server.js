@@ -8,13 +8,12 @@ const db = new Pool({
     ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// Полная автоматическая инициализация всех таблиц базы данных при старте сервера
+// Полная автоматическая инициализация таблиц базы данных при старте сервера
 async function initDatabase() {
     try {
         const client = await db.connect();
         console.log('✅ Успешное подключение к PostgreSQL на Render!');
 
-        // Создаем тип ENUM для платформ, если его еще нет
         await client.query(`
             DO $$ BEGIN
                 CREATE TYPE user_platform AS ENUM ('web', 'game', 'offline');
@@ -51,7 +50,7 @@ async function initDatabase() {
             );
         `);
 
-        // 2. Таблица общего чата локаций
+        // 2. Таблица общего чата (используется api_chat.php)
         await client.query(`
             CREATE TABLE IF NOT EXISTS chat (
                 id SERIAL PRIMARY KEY,
@@ -64,7 +63,7 @@ async function initDatabase() {
             );
         `);
 
-        // 3. Таблица личных сообщений
+        // 3. Таблица личных сообщений (используется api_privat.php)
         await client.query(`
             CREATE TABLE IF NOT EXISTS private_messages (
                 id SERIAL PRIMARY KEY,
@@ -111,67 +110,7 @@ async function initDatabase() {
             );
         `);
 
-        // 7. Таблица старых системных/общих сообщений (messages)
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS messages (
-                id SERIAL PRIMARY KEY,
-                sender_id INT,
-                receiver_id INT DEFAULT NULL,
-                message TEXT NOT NULL,
-                is_read INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_vip INT DEFAULT 0
-            );
-        `);
-
-        // 8. Таблица уведомлений (notifications)
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS notifications (
-                id SERIAL PRIMARY KEY,
-                user_id INT NOT NULL,
-                message TEXT NOT NULL,
-                is_read INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // 9. Таблица подарков пользователей (user_gifts)
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS user_gifts (
-                id SERIAL PRIMARY KEY,
-                sender_id INT NOT NULL,
-                receiver_id INT NOT NULL,
-                gift_icon TEXT DEFAULT NULL,
-                gift_color VARCHAR(20) DEFAULT 'gold',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        // 10. Таблица фотографий пользователей (user_photos)
-        await client.query(`
-            CREATE TABLE IF NOT EXISTS user_photos (
-                id SERIAL PRIMARY KEY,
-                user_id INT NOT NULL,
-                photo_path VARCHAR(255) NOT NULL,
-                description TEXT DEFAULT '',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-
-        console.log('📋 Все 10 таблиц успешно проверены и созданы в PostgreSQL!');
-
-        const resCheck = await client.query("SELECT COUNT(*) FROM users;");
-        if (parseInt(resCheck.rows[0].count) === 0) {
-            console.log('📦 Таблица users пуста. Заливаем стартовых игроков...');
-            await client.query(`
-                INSERT INTO users (id, username, password, email, gender, birth_year, selected_character, plot_coords, name_changes, status_text, avatar_path, created_at, plot_name, last_active, money, citymoney, last_seen, platform, is_typing_at, pos_x, pos_y, pos_z) VALUES
-                (1, 'sereqa', '$2y$10$5cqEQA0OH9ChAaX0RqG2f.O7jM9x5uTOTfR8lUDwdNIZI7VLSgKBW', 'sereqaviktorovi4@gmail.com', 'm', 1981, NULL, '1-3', 0, 'Король этого города', 'uploads/avatars/avatar_u1_1776072071_26a0fc9a.jpg', '2026-04-13 09:20:53', 'мой дом', '2026-07-22 10:49:24', 99650, 240, '2026-07-22 10:49:24', 'game', 0, 0, 0, 0),
-                (11, 'anna', '$2y$10$xKuOZcjxHsf33svc6vlbpuXOqUORY1Xodtx2bSkTelSthgls61Fui', 'ЭМАИЛ', 'm', 2000, NULL, '2-2', 0, 'Житель Love City', '', '2026-04-30 05:31:14', 'Мой участок', '2026-07-22 14:34:08', 950, 400, '2026-07-22 14:34:08', 'game', 0, 0, 0, 0);
-            `);
-            await client.query("SELECT setval('users_id_seq', 12, false);");
-            console.log('✨ Стартовые пользователи успешно загружены!');
-        }
-
+        console.log('📋 Таблицы успешно проверены и созданы в PostgreSQL!');
         client.release();
     } catch (e) {
         console.error('❌ Ошибка инициализации БД:', e.message);
@@ -258,7 +197,7 @@ wss.on('connection', (ws) => {
                 });
             }
 
-            // ИГРОВОЙ МИР
+            // ИГРОВОЙ МИР (ПОЗИЦИИ И КОМНАТЫ)
             if (data.action === 'join') {
                 playerId = parseInt(data.user_id);
                 ws.current_room = data.room || "1-1";
@@ -306,73 +245,6 @@ wss.on('connection', (ws) => {
                 broadcastToRoom(ws.current_room, {
                     action: "player_moved", id: playerId, x: data.x, y: data.y, z: data.z, rot_y: data.rot_y
                 }, playerId);
-            }
-
-            // ОБЩИЙ ЧАТ
-            if (data.action === 'chat') {
-                if (!playerId && ws.user_id) playerId = ws.user_id;
-                const senderName = ws.username || data.username || "Игрок";
-                const currentRoom = ws.current_room || data.room || "1-1";
-                const msgText = data.message || data.text;
-
-                db.query("INSERT INTO chat (user_id, username, room_id, message) VALUES ($1, $2, $3, $4)", [playerId || 0, senderName, currentRoom, msgText], () => {});
-                broadcastToRoom(currentRoom, { action: "player_chat", username: senderName, sender: senderName, message: msgText });
-            }
-
-            // ЛИЧНЫЕ СООБЩЕНИЯ
-            if (data.action === 'get_chats') {
-                const currentUserId = parseInt(data.user_id || ws.user_id);
-                if (!currentUserId) return;
-                const chatsQuery = `
-                    SELECT DISTINCT ON (partner_id)
-                        partner_id, u.username AS partner_username, u.avatar_path AS partner_avatar,
-                        pm.message AS last_message, pm.created_at AS last_time, pm.sender_id
-                    FROM (
-                        SELECT sender_id AS partner_id, recipient_id, message, created_at, sender_id FROM private_messages WHERE recipient_id = $1
-                        UNION ALL
-                        SELECT recipient_id AS partner_id, sender_id, message, created_at, sender_id FROM private_messages WHERE sender_id = $1
-                    ) pm
-                    JOIN users u ON u.id = pm.partner_id
-                    ORDER BY partner_id, pm.created_at DESC;
-                `;
-                db.query(chatsQuery, [currentUserId], (err, results) => {
-                    ws.send(JSON.stringify({ action: "get_chats", status: "success", chats: err ? [] : results.rows }));
-                });
-            }
-
-            if (data.action === 'get_history') {
-                const currentUserId = parseInt(data.user_id || ws.user_id);
-                const partnerId = parseInt(data.partner_id || data.with_user_id || data.recipient_id);
-                if (!currentUserId || !partnerId) return;
-                const historyQuery = `
-                    SELECT id, sender_id, recipient_id, message, created_at
-                    FROM private_messages
-                    WHERE (sender_id = $1 AND recipient_id = $2) OR (sender_id = $2 AND recipient_id = $1)
-                    ORDER BY created_at ASC LIMIT 100;
-                `;
-                db.query(historyQuery, [currentUserId, partnerId], (err, results) => {
-                    ws.send(JSON.stringify({ action: "get_history", status: "success", partner_id: partnerId, messages: err ? [] : results.rows }));
-                });
-            }
-
-            if (data.action === 'send_message' || data.action === 'private_chat') {
-                const senderId = parseInt(data.user_id || ws.user_id);
-                const recipientId = parseInt(data.recipient_id || data.target_id);
-                const msgText = data.message || data.text;
-                if (!senderId || !recipientId || !msgText) return;
-
-                db.query("INSERT INTO private_messages (sender_id, recipient_id, message) VALUES ($1, $2, $3) RETURNING id, created_at", [senderId, recipientId, msgText], (err, res) => {
-                    if (err) return;
-                    const savedMsg = res.rows[0];
-                    const packet = {
-                        action: "private_chat", id: savedMsg.id, sender_id: senderId, recipient_id: recipientId,
-                        sender_name: ws.username || "Игрок", message: msgText, created_at: savedMsg.created_at
-                    };
-                    ws.send(JSON.stringify({ action: "send_message", status: "success", message_data: packet }));
-                    if (playerSockets.has(recipientId)) {
-                        playerSockets.get(recipientId).send(JSON.stringify(packet));
-                    }
-                });
             }
 
             // ДРУЗЬЯ И ЗАЯВКИ
