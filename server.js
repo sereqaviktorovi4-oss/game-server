@@ -2,6 +2,11 @@ const { WebSocketServer } = require('ws');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const express = require('express'); // Добавлено для HTTP API
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const db = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -50,7 +55,7 @@ async function initDatabase() {
             );
         `);
 
-        // 2. Таблица общего чата (используется api_chat.php)
+        // 2. Таблица общего чата
         await client.query(`
             CREATE TABLE IF NOT EXISTS chat (
                 id SERIAL PRIMARY KEY,
@@ -63,7 +68,7 @@ async function initDatabase() {
             );
         `);
 
-        // 3. Таблица личных сообщений (используется api_privat.php)
+        // 3. Таблица личных сообщений
         await client.query(`
             CREATE TABLE IF NOT EXISTS private_messages (
                 id SERIAL PRIMARY KEY,
@@ -120,8 +125,89 @@ async function initDatabase() {
 initDatabase();
 
 const PORT = process.env.PORT || 3000;
-const wss = new WebSocketServer({ port: PORT });
 
+// Создаем единый HTTP сервер, на котором будет работать и Express, и WebSocket
+const server = app.listen(PORT, () => {
+    console.log(`🚀 HTTP и WebSocket сервер запущен на порту ${PORT}`);
+});
+
+const wss = new WebSocketServer({ server });
+
+// ==========================================
+// HTTP API ДЛЯ GODOT (Замена game_api.php)
+// ==========================================
+app.all('/game_api.php', async (req, res) => {
+    const action = req.body.action || req.query.action || '';
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+
+    // Логин через HTTP
+    if (action === 'login') {
+        const username = req.body.username || '';
+        const password = req.body.password || '';
+
+        try {
+            const result = await db.query("SELECT * FROM users WHERE LOWER(username) = LOWER($1)", [username]);
+            if (result.rows.length > 0) {
+                const user = result.rows[0];
+                let isValid = false;
+                if (user.password.startsWith('$2a$') || user.password.startsWith('$2y$') || user.password.startsWith('$2b$')) {
+                    isValid = await bcrypt.compare(password, user.password);
+                } else {
+                    isValid = (user.password === password || user.password === md5(password));
+                }
+
+                if (isValid) {
+                    await db.query("UPDATE users SET platform = 'game', last_seen = NOW() WHERE id = $1", [user.id]);
+                    return res.json({
+                        success: true,
+                        username: user.username,
+                        user_id: Number(user.id)
+                    });
+                } else {
+                    return res.json({ success: false, message: "Неверный пароль" });
+                }
+            } else {
+                return res.json({ success: false, message: "Пользователь не найден" });
+            }
+        } catch (err) {
+            console.error("Ошибка HTTP логина:", err);
+            return res.json({ success: false, message: "Ошибка сервера БД" });
+        }
+    }
+
+    // Профиль игрока через HTTP
+    if (action === 'get_profile') {
+        const user_id = parseInt(req.body.user_id || req.query.user_id || 0);
+        try {
+            const result = await db.query("SELECT username, status_text, gender, plot_coords, money FROM users WHERE id = $1", [user_id]);
+            if (result.rows.length > 0) {
+                const user = result.rows[0];
+                const raw_plot = String(user.plot_coords || '').trim();
+                const plot = (raw_plot === '' || raw_plot === '0' || raw_plot === '0,0,0') ? "1-1" : raw_plot;
+
+                return res.json({
+                    status: "success",
+                    username: user.username,
+                    status_text: user.status_text || "Я здесь новый житель!",
+                    gender: user.gender || "m",
+                    district_name: "Love Sector A",
+                    plot_coords: plot,
+                    citymoney: Number(user.money || 100)
+                });
+            }
+        } catch (err) {
+            console.error("Ошибка get_profile:", err);
+        }
+        return res.json({ status: "error", message: "user_not_found" });
+    }
+
+    // Если экшен не найден
+    return res.json({ status: "error", message: "unknown_action" });
+});
+
+// ==========================================
+// WEBSOCKET ЛОГИКА
+// ==========================================
 const players = {};
 const playerSockets = new Map();
 
@@ -150,7 +236,7 @@ wss.on('connection', (ws) => {
         try {
             const data = JSON.parse(message);
 
-            // ЛОГИН
+            // ЛОГИН ЧЕРЕЗ WEBSOCKET
             if (data.action === 'login' || data.type === 'login') {
                 const { username, password } = data;
                 db.query("SELECT id, username, password FROM users WHERE LOWER(username) = LOWER($1)", [username], async (err, results) => {
@@ -167,7 +253,7 @@ wss.on('connection', (ws) => {
                     }
                     if (isValid) {
                         ws.send(JSON.stringify({ action: "login_response", success: true, user_id: user.id, username: user.username }));
-                        console.log(`🔑 Успешный вход: ${user.username}`);
+                        console.log(`🔑 Успешный вход (WS): ${user.username}`);
                     } else {
                         ws.send(JSON.stringify({ action: "login_response", success: false, message: "Неверный логин или пароль" }));
                     }
@@ -321,5 +407,3 @@ wss.on('connection', (ws) => {
         }
     });
 });
-
-console.log(`🚀 Сервер запущен на порту ${PORT}`);
