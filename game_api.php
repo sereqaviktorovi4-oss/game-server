@@ -245,7 +245,7 @@ elseif ($action == 'get_history') {
 }
 
 // ==========================================
-// 8. ОТПРАВКА СООБЩЕНИЯ
+// 8. ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ
 // ==========================================
 elseif ($action == 'private_chat') {
     $sender_id = intval($_POST['sender_id'] ?? 0);
@@ -266,6 +266,83 @@ elseif ($action == 'private_chat') {
     }
 
     echo json_encode(["status" => "error", "message" => "invalid_params"], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ==========================================
+// 9. ОБНОВЛЕНИЕ КООРДИНАТ ИГРОКА (MOVE)
+// ==========================================
+elseif ($action == 'move') {
+    $user_id = intval($_POST['user_id'] ?? 0);
+    $x = floatval($_POST['x'] ?? 0);
+    $y = floatval($_POST['y'] ?? 0);
+    $z = floatval($_POST['z'] ?? 0);
+    $rot_y = floatval($_POST['rot_y'] ?? 0);
+
+    if ($user_id > 0) {
+        pg_query_params($db, "UPDATE users SET pos_x = $1, pos_y = $2, pos_z = $3, last_seen = NOW() WHERE id = $4", array($x, $y, $z, $user_id));
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(["status" => "success"], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ==========================================
+// 10. ОБЩИЙ ЧАТ (SEND CHAT)
+// ==========================================
+elseif ($action == 'chat') {
+    $user_id = intval($_POST['user_id'] ?? 0);
+    $message = trim($_POST['message'] ?? '');
+
+    // Если у вас есть таблица для общего чата (например, public_messages), сохраняйте сюда.
+    // Если отдельной таблицы нет, этот блок просто зафиксирует активность.
+    if ($user_id > 0 && !empty($message)) {
+        // Пример сохранения в общую таблицу (если она создана):
+        // @pg_query_params($db, "INSERT INTO public_messages (user_id, message, created_at) VALUES ($1, $2, NOW())", array($user_id, $message));
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(["status" => "success"], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ==========================================
+// 11. ПОЛУЧЕНИЕ СОСТОЯНИЯ МИРА (GET WORLD STATE)
+// Опрос сервера раз в 0.5 сек для мультиплеера
+// ==========================================
+elseif ($action == 'get_world_state') {
+    $user_id = intval($_POST['user_id'] ?? 0);
+    $location = $_POST['location'] ?? '1-1';
+
+    // Обновляем время активности текущего игрока
+    if ($user_id > 0) {
+        pg_query_params($db, "UPDATE users SET last_seen = NOW() WHERE id = $1", array($user_id));
+    }
+
+    // Собираем других активных игроков (кто был в сети за последние 10 секунд и не текущий игрок)
+    $players_res = pg_query_params($db, "SELECT id, username, pos_x, pos_y, pos_z FROM users WHERE id != $1 AND last_seen >= NOW() - INTERVAL '10 seconds'", array($user_id));
+    
+    $players = [];
+    if ($players_res) {
+        while ($p = pg_fetch_assoc($players_res)) {
+            $players[$p['id']] = [
+                "id" => intval($p['id']),
+                "username" => $p['username'],
+                "x" => floatval($p['pos_x']),
+                "y" => floatval($p['pos_y']),
+                "z" => floatval($p['pos_z']),
+                "rot_y" => 0.0
+            ];
+        }
+    }
+
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        "status" => "success",
+        "players" => $players,
+        "chat" => [] // Сюда при необходимости можно подтягивать новые сообщения общего чата
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
